@@ -3,6 +3,7 @@ const router = express.Router();
 const { body } = require('express-validator');
 const { createPost, getAllPosts, getPost, updatePost, deletePost } = require('../controllers/postController');
 const auth = require('../middleware/auth');
+const role = require('../middleware/role');
 
 router.get('/', getAllPosts);
 router.get('/:id', getPost);

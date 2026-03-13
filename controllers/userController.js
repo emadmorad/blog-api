@@ -40,12 +40,77 @@ const login = function(req, res) {
       return res.status(400).json({ message: 'Wrong password' });
     }
 
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const accessToken = jwt.sign(
+      { id: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '15m' }
+    );
 
-    res.json({ token: token });
+    const refreshToken = jwt.sign(
+      { id: user._id },
+      process.env.REFRESH_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    user.refreshToken = refreshToken;
+    user.save().then(function() {
+      res.json({ accessToken: accessToken, refreshToken: refreshToken });
+    });
+
   }).catch(function(err) {
     res.status(500).json({ message: err.message });
   });
 };
 
-module.exports = { register, login };
+const refresh = function(req, res) {
+  const token = req.body.refreshToken;
+
+  if (!token) {
+    return res.status(401).json({ message: 'No refresh token' });
+  }
+
+  User.findOne({ refreshToken: token }).then(function(user) {
+    if (!user) {
+      return res.status(403).json({ message: 'Invalid refresh token' });
+    }
+
+    try {
+      jwt.verify(token, process.env.REFRESH_SECRET);
+
+      const accessToken = jwt.sign(
+        { id: user._id, role: user.role },
+        process.env.JWT_SECRET,
+        { expiresIn: '15m' }
+      );
+
+      res.json({ accessToken: accessToken });
+    } catch (err) {
+      res.status(403).json({ message: 'Refresh token expired' });
+    }
+
+  }).catch(function(err) {
+    res.status(500).json({ message: err.message });
+  });
+};
+
+const logout = function(req, res) {
+  User.findOne({ refreshToken: req.body.refreshToken }).then(function(user) {
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid token' });
+    }
+
+    user.refreshToken = null;
+    user.save().then(function() {
+      res.json({ message: 'Logged out successfully' });
+    });
+
+  }).catch(function(err) {
+    res.status(500).json({ message: err.message });
+  });
+};
+
+module.exports = { register, login, refresh, logout };
+
+
+
+

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { body } = require('express-validator');
-const { register, login } = require('../controllers/userController');
+const { register, login, refresh, logout } = require('../controllers/userController');
 
 router.post('/register', [
   body('name').notEmpty().withMessage('Name is required'),
@@ -13,5 +13,8 @@ router.post('/login', [
   body('email').isEmail().withMessage('Enter a valid email'),
   body('password').notEmpty().withMessage('Password is required')
 ], login);
+
+router.post('/refresh', refresh);
+router.post('/logout', logout);
 
 module.exports = router;

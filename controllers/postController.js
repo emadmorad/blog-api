@@ -9,7 +9,8 @@ const createPost = function(req, res) {
 
   const post = new Post({
     title: req.body.title,
-    content: req.body.content
+    content: req.body.content,
+    author: req.user.id
   });
 
   post.save().then(function(savedPost) {
@@ -59,11 +60,19 @@ const updatePost = function(req, res) {
 };
 
 const deletePost = function(req, res) {
-  Post.findByIdAndDelete(req.params.id).then(function(post) {
+  Post.findById(req.params.id).then(function(post) {
     if (!post) {
       return res.status(404).json({ message: 'Post not found' });
     }
-    res.json({ message: 'Post deleted' });
+
+    if (post.author.toString() !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    Post.findByIdAndDelete(req.params.id).then(function() {
+      res.json({ message: 'Post deleted' });
+    });
+
   }).catch(function(err) {
     res.status(500).json({ message: err.message });
   });
