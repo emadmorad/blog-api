@@ -3,114 +3,138 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
 
-const register = function(req, res) {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
+// ======== Helpers ========
 
-  const hashedPassword = bcrypt.hashSync(req.body.password, 10);
+const generateAccessToken = (user) =>
+  jwt.sign(
+    { id: user._id, role: user.role },
+    process.env.JWT_SECRET,
+    { expiresIn: '15m' }
+  );
 
-  const user = new User({
-    name: req.body.name,
-    email: req.body.email,
-    password: hashedPassword
-  });
+const generateRefreshToken = (user) =>
+  jwt.sign(
+    { id: user._id },
+    process.env.REFRESH_SECRET,
+    { expiresIn: '7d' }
+  );
 
-  user.save().then(function(savedUser) {
-    res.status(201).json({ message: 'User created successfully' });
-  }).catch(function(err) {
-    res.status(400).json({ message: err.message });
-  });
+const COOKIE_OPTIONS = {
+  httpOnly: true,                                    
+  secure: process.env.NODE_ENV === 'production',    
+  sameSite: 'strict',                               
+  maxAge: 7 * 24 * 60 * 60 * 1000,                 
 };
 
-const login = function(req, res) {
+// ======== Controllers ========
+
+// User registration controller
+const register = async (req, res, next) => {
   const errors = validationResult(req);
+
   if (!errors.isEmpty()) {
     return res.status(400).json({ errors: errors.array() });
   }
 
-  User.findOne({ email: req.body.email }).then(function(user) {
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+  try {
+    const { name, email, password } = req.body;
+
+    const existingUser = await User.findOne({ email });
+
+    if (existingUser) {
+      return res.status(400).json({
+        message: 'Email already in use'
+      });
     }
 
-    const isMatch = bcrypt.compareSync(req.body.password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ message: 'Wrong password' });
-    }
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    const accessToken = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: '15m' }
-    );
-
-    const refreshToken = jwt.sign(
-      { id: user._id },
-      process.env.REFRESH_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    user.refreshToken = refreshToken;
-    user.save().then(function() {
-      res.json({ accessToken: accessToken, refreshToken: refreshToken });
+    await User.create({
+      name,
+      email,
+      password: hashedPassword
     });
 
-  }).catch(function(err) {
-    res.status(500).json({ message: err.message });
-  });
+    res.status(201).json({
+      message: 'User created successfully'
+    });
+
+  } catch (err) {
+    next(err);
+  }
 };
 
-const refresh = function(req, res) {
-  const token = req.body.refreshToken;
+// User login controller
+const login = async (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-  if (!token) {
-    return res.status(401).json({ message: 'No refresh token' });
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email }).select('+password');
+    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(401).json({ message: 'Invalid credentials' });
+
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
+
+    user.refreshToken = refreshToken;
+    await user.save();
+
+    res.cookie('refreshToken', refreshToken, COOKIE_OPTIONS);
+    res.json({ accessToken });
+  } catch (err) {
+    next(err);
   }
+};
 
-  User.findOne({ refreshToken: token }).then(function(user) {
-    if (!user) {
+/*  Refresh access token using refresh token from cookie 
+and verify that refresh token exists in database */
+const refresh = async (req, res, next) => {
+  const token = req.cookies.refreshToken;
+  if (!token) return res.status(401).json({ message: 'No refresh token provided' });
+
+  try {
+    const decoded = jwt.verify(token, process.env.REFRESH_SECRET);
+
+    const user = await User.findById(decoded.id).select('+refreshToken');
+    if (!user || user.refreshToken !== token) {
       return res.status(403).json({ message: 'Invalid refresh token' });
     }
 
-    try {
-      jwt.verify(token, process.env.REFRESH_SECRET);
+    const accessToken = generateAccessToken(user);
 
-      const accessToken = jwt.sign(
-        { id: user._id, role: user.role },
-        process.env.JWT_SECRET,
-        { expiresIn: '15m' }
-      );
+    const newRefreshToken = generateRefreshToken(user);
+    user.refreshToken = newRefreshToken;
+    await user.save();
 
-      res.json({ accessToken: accessToken });
-    } catch (err) {
-      res.status(403).json({ message: 'Refresh token expired' });
-    }
+    res.cookie('refreshToken', newRefreshToken, COOKIE_OPTIONS);
+    res.json({ accessToken });
 
-  }).catch(function(err) {
-    res.status(500).json({ message: err.message });
-  });
+  } catch (err) {
+    err.status = 401;
+    next(err);
+  }
 };
 
-const logout = function(req, res) {
-  User.findOne({ refreshToken: req.body.refreshToken }).then(function(user) {
-    if (!user) {
-      return res.status(400).json({ message: 'Invalid token' });
+// Logout controller
+const logout = async (req, res, next) => {
+  try {
+    const token = req.cookies.refreshToken;
+    if (token) {
+      await User.findOneAndUpdate(
+        { refreshToken: token },
+        { refreshToken: null }
+      );
     }
-
-    user.refreshToken = null;
-    user.save().then(function() {
-      res.json({ message: 'Logged out successfully' });
-    });
-
-  }).catch(function(err) {
-    res.status(500).json({ message: err.message });
-  });
+    res.clearCookie('refreshToken', COOKIE_OPTIONS);
+    res.json({ message: 'Logged out successfully' });
+  } catch (err) {
+    next(err);
+  }
 };
 
 module.exports = { register, login, refresh, logout };
-
-
-
-
